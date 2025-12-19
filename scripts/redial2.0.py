@@ -2,45 +2,81 @@ import sys
 import KSR as KSR
 
 ACME_DOM = "acme.operador"
+MAX_REDIALS = 5
 
 # Mandatory function - module initiation
 def mod_init():
     KSR.info("===== from Python mod init\n")
     return kamailio()
 
-# guarda o AOR no formato user@domain para depois se associar uma lista vazia
+# guarda o AOR no formato user@domain
 def aor_Key():
     return KSR.pv.get("$tU") + "@" + KSR.pv.get("$td")
 
 def deregister(aor):
     expire = KSR.hdr.get("Expires")
-
     if not expire:
         return False
-
     try:
         if int(expire.strip()) != 0:
             return False
     except:
         return False
-
-    # é deregister
+    
     KSR.info("DE-REGISTER DETETADO (Expires: 0)\n")
     KSR.registrar.save("location", 0)
     return True
 
-
-
 class kamailio:
-    # Mandatory function - Kamailio class initiation
     def __init__(self):
         KSR.info('===== kamailio.__init__\n')
 
-    # Mandatory function - Kamailio subprocesses
     def child_init(self, rank):
         KSR.info('===== kamailio.child_init(%d)\n' % rank)
         return 0
 
+  
+    def ksr_redial_service(self, msg):
+        # 1. Se não for MESSAGE, ignora
+        if msg.Method != "MESSAGE":
+            return -1
+
+        # 2. Se não for para o "redial", ignora (permite chat normal)
+        if KSR.pv.get("$rU") != "redial" or KSR.pv.get("$rd") != ACME_DOM:
+            return -1
+
+        # --- A PARTIR DAQUI É O SERVIÇO REDIAL ---
+        sender_aor = KSR.pv.get("$fU") + "@" + KSR.pv.get("$fd")
+
+        # 3. Verificar se quem envia está registado
+        valor_tabela = KSR.htable.sht_get("redial", sender_aor)
+
+        KSR.info(f"Debug Redial: Valor na tabela para {sender_aor} é: '{valor_tabela}'\n")
+
+        if valor_tabela is None:
+            KSR.sl.send_reply(403, "Forbidden - You must REGISTER first")
+            KSR.info(f"Redial: Tentativa de {sender_aor} rejeitada (Não registado)\n")
+            return 1 # Parar script (já respondemos)
+
+        # 4. Lógica do ACTIVATE
+        body = KSR.pv.get("$rb")
+        if body and body.startswith("ACTIVATE"):
+            res = body.replace("ACTIVATE", "").strip()
+
+            if len(res.split()) > 0:
+                KSR.htable.sht_sets("redial", sender_aor, res)    
+                KSR.sl.send_reply(200, "OK - Service Activated")
+                KSR.info(f"Redial ATIVADO para {sender_aor}. Lista: {res}\n")
+            else:
+                KSR.sl.send_reply(400, "Bad Request - List is empty")
+
+            return 1 # IMPORTANTE: Retorna 1 para parar o script
+
+        return 1
+
+    # ---------------------------------------------------------
+    # ROTA PRINCIPAL (REQUEST ROUTE)
+    # ---------------------------------------------------------
     def ksr_request_route(self, msg):
         
         # 1. Verificação de Domínio Global (Segurança)
@@ -49,57 +85,53 @@ class kamailio:
             KSR.info("Domínio errado: " + KSR.pv.get("$td") + "\n")
             return 1
 
-       # --- Lógica de REGISTER ---
+        # --- Lógica de MESSAGE ---
+        if msg.Method == "MESSAGE":
+            # Tenta executar o serviço redial
+            # Se retornar 1, paramos aqui (evita o erro 405)
+            if self.ksr_redial_service(msg) == 1:
+                return 1
+            
+            # Se retornar -1, continua para Chat Normal
+            if KSR.registrar.lookup("location") == 1:
+                KSR.tm.t_relay()
+                return 1
+            
+            KSR.sl.send_reply(404, "Not Found")
+            return 1
+
+        # --- Lógica de REGISTER ---
         if msg.Method == "REGISTER":
             KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")
-            KSR.info("To: " + KSR.pv.get("$tu") + " Contact: " + KSR.hdr.get("Contact") + "\n")
             
             aor = aor_Key()
             
             # Verificar desregisto
             if deregister(aor):
-                # CORREÇÃO: Usar sht_rm (verifica se esta função existe na tua versão, geralmente é sht_rm ou sht_rm_name_key)
                 KSR.htable.sht_rm("redial", aor) 
                 return 1 
 
             # Registo normal
             KSR.registrar.save("location", 0)
             
-            # Inicializar lista redial
-            # CORREÇÃO: Mudar de 'sht_set' para 'sht_sets' (String)
+            # Inicializar lista redial com "sambabue" (para os teus testes)
+            # Depois muda para "" quando quiseres limpar
             KSR.htable.sht_sets("redial", aor, "") 
-            
             KSR.info("Registo e HTABLE atualizados para: " + aor + "\n")
             return 1
 
         # --- Lógica de INVITE ---
         if msg.Method == "INVITE":
-            KSR.info("INVITE R-URI: " + KSR.pv.get("$ru") + "\n")
-            KSR.info("From: " + KSR.pv.get("$fu") + " To: " + KSR.pv.get("$tu") +"\n")
-
-            
             if KSR.registrar.lookup("location") == 1:
-                # Utilizador encontrado e R-URI atualizado para o IP do cliente
                 KSR.rr.record_route()
                 KSR.tm.t_relay()
                 return 1
             else:
-                # Utilizador não encontrado
                 KSR.sl.send_reply(404, "Not found")
                 return 1
 
         # --- Lógica de ACK, BYE, CANCEL ---
-        if msg.Method == "ACK":
-            KSR.rr.loose_route()
-            KSR.tm.t_relay()
-            return 1
-
-        if msg.Method == "BYE":
-            KSR.rr.loose_route()
-            KSR.tm.t_relay()
-            return 1
-
-        if msg.Method == "CANCEL":
+        if msg.Method in ["ACK", "BYE", "CANCEL"]:
             KSR.rr.loose_route()
             KSR.tm.t_relay()
             return 1
