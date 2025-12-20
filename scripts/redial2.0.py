@@ -2,26 +2,21 @@ import sys
 import KSR as KSR
 
 ACME_DOM = "acme.operador"
-MAX_REDIALS = 5
 
 # Mandatory function - module initiation
 def mod_init():
-    KSR.info("===== from Python mod init\n")
+    KSR.info("===== Redial 2.0: Modulo Carregado =====\n")
     return kamailio()
 
-# guarda o AOR no formato user@domain
 def aor_Key():
     return KSR.pv.get("$tU") + "@" + KSR.pv.get("$td")
 
 def deregister(aor):
     expire = KSR.hdr.get("Expires")
-    if not expire:
-        return False
+    if not expire: return False
     try:
-        if int(expire.strip()) != 0:
-            return False
-    except:
-        return False
+        if int(expire.strip()) != 0: return False
+    except: return False
     
     KSR.info("DE-REGISTER DETETADO (Expires: 0)\n")
     KSR.registrar.save("location", 0)
@@ -29,49 +24,35 @@ def deregister(aor):
 
 class kamailio:
     def __init__(self):
-        KSR.info('===== kamailio.__init__\n')
+        KSR.info('===== kamailio class init =====\n')
 
     def child_init(self, rank):
-        KSR.info('===== kamailio.child_init(%d)\n' % rank)
         return 0
 
-  
+    # --- Função Auxiliar do Serviço Redial (MESSAGE) ---
     def ksr_redial_service(self, msg):
-        # 1. Se não for MESSAGE, ignora
-        if msg.Method != "MESSAGE":
-            return -1
+        if msg.Method != "MESSAGE": return -1
+        if KSR.pv.get("$rU") != "redial": return -1
 
-        # 2. Se não for para o "redial", ignora (permite chat normal)
-        if KSR.pv.get("$rU") != "redial" or KSR.pv.get("$rd") != ACME_DOM:
-            return -1
-
-        # --- A PARTIR DAQUI É O SERVIÇO REDIAL ---
         sender_aor = KSR.pv.get("$fU") + "@" + KSR.pv.get("$fd")
-
-        # 3. Verificar se quem envia está registado
         valor_tabela = KSR.htable.sht_get("redial", sender_aor)
-
-        KSR.info(f"Debug Redial: Valor na tabela para {sender_aor} é: '{valor_tabela}'\n")
 
         if valor_tabela is None:
             KSR.sl.send_reply(403, "Forbidden - You must REGISTER first")
-            KSR.info(f"Redial: Tentativa de {sender_aor} rejeitada (Não registado)\n")
-            return 1 # Parar script (já respondemos)
+            return 1
 
-        # 4. Lógica do ACTIVATE
         body = KSR.pv.get("$rb")
-        if body and body.startswith("ACTIVATE"):
+        if body and "ACTIVATE" in body:
+            # Remove a palavra ACTIVATE e fica com a lista (ex: "carol dave")
             res = body.replace("ACTIVATE", "").strip()
-
-            if len(res.split()) > 0:
+            if len(res) > 0:
                 KSR.htable.sht_sets("redial", sender_aor, res)    
-                KSR.sl.send_reply(200, "OK - Service Activated")
-                KSR.info(f"Redial ATIVADO para {sender_aor}. Lista: {res}\n")
+                KSR.sl.send_reply(200, "OK - Updated: " + res)
+                KSR.info(f"Redial: Lista de {sender_aor} atualizada para [{res}]\n")
             else:
-                KSR.sl.send_reply(400, "Bad Request - List is empty")
-
-            return 1 # IMPORTANTE: Retorna 1 para parar o script
-
+                KSR.sl.send_reply(400, "Empty List")
+            return 1
+        
         return 1
 
     # ---------------------------------------------------------
@@ -79,50 +60,45 @@ class kamailio:
     # ---------------------------------------------------------
     def ksr_request_route(self, msg):
         
-        # 1. Verificação de Domínio Global (Segurança)
         if KSR.pv.get("$td") != ACME_DOM:
             KSR.sl.send_reply(403, "Forbidden Domain")
-            KSR.info("Domínio errado: " + KSR.pv.get("$td") + "\n")
             return 1
 
-        # --- Lógica de MESSAGE ---
+        # --- MESSAGE ---
         if msg.Method == "MESSAGE":
-            # Tenta executar o serviço redial
-            # Se retornar 1, paramos aqui (evita o erro 405)
             if self.ksr_redial_service(msg) == 1:
                 return 1
-            
-            # Se retornar -1, continua para Chat Normal
             if KSR.registrar.lookup("location") == 1:
                 KSR.tm.t_relay()
                 return 1
-            
             KSR.sl.send_reply(404, "Not Found")
             return 1
 
-        # --- Lógica de REGISTER ---
+        # --- REGISTER ---
         if msg.Method == "REGISTER":
-            KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")
-            
             aor = aor_Key()
-            
-            # Verificar desregisto
             if deregister(aor):
                 KSR.htable.sht_rm("redial", aor) 
                 return 1 
 
-            # Registo normal
             KSR.registrar.save("location", 0)
-            
-            # Inicializar lista redial com "sambabue" (para os teus testes)
-            # Depois muda para "" quando quiseres limpar
-            KSR.htable.sht_sets("redial", aor, "") 
-            KSR.info("Registo e HTABLE atualizados para: " + aor + "\n")
+            # Cria entrada vazia se não existir
+            if KSR.htable.sht_get("redial", aor) is None:
+                KSR.htable.sht_sets("redial", aor, "") 
             return 1
 
-        # --- Lógica de INVITE ---
+        # --- INVITE (Onde a magia começa) ---
         if msg.Method == "INVITE":
             if KSR.registrar.lookup("location") == 1:
+                
+                # 1. Armar a armadilha de falha
+                KSR.tm.t_on_failure("ksr_failure_route_redial")
+                
+                # 2. Guardar contexto (Quem ligou e reiniciar índice a 0)
+                caller_aor = KSR.pv.get("$fU") + "@" + KSR.pv.get("$fd")
+                KSR.pv.sets("$avp(caller)", caller_aor)
+                KSR.pv.sets("$avp(redial_idx)", "0") 
+                
                 KSR.rr.record_route()
                 KSR.tm.t_relay()
                 return 1
@@ -130,24 +106,61 @@ class kamailio:
                 KSR.sl.send_reply(404, "Not found")
                 return 1
 
-        # --- Lógica de ACK, BYE, CANCEL ---
         if msg.Method in ["ACK", "BYE", "CANCEL"]:
             KSR.rr.loose_route()
             KSR.tm.t_relay()
             return 1
 
-        # Método não permitido
         KSR.sl.send_reply(405, "Method Not Allowed")
         return 1
 
-    # Function called for REPLY messages received
-    def ksr_reply_route(self, msg):
-        KSR.info("===== reply_route - from kamailio python script: ")
-        KSR.info("  Status is:"+ str(KSR.pv.get("$rs")) + "\n")
-        return 1
+    # ---------------------------------------------------------
+    # ROTA DE FALHA (Versão "Forçar Execução")
+    # ---------------------------------------------------------
+    def ksr_failure_route_redial(self, msg):
+        caller = str(KSR.pv.get("$avp(caller)"))
+        status = str(KSR.pv.get("$rs"))
+        
+        KSR.info(f"!!! FALHA DETETADA !!! Status: {status} | Caller: {caller}\n")
 
-    # Function called for messages sent/transit
-    def ksr_onsend_route(self, msg):
-        KSR.info("===== onsend route - from kamailio python script:")
-        KSR.info("   %s\n" %(msg.Type))
+        # 1. Tentar obter a lista IMEDIATAMENTE (sem 'if' de status)
+        redial_list = KSR.htable.sht_get("redial", caller)
+        
+        # Se a lista estiver vazia ou for None, abortamos
+        if redial_list is None or redial_list == "":
+            KSR.info(f"REDIAL: {caller} não tem lista de remarcação ativa. Fim.\n")
+            return 1
+            
+        KSR.info(f"REDIAL DEBUG: Lista encontrada -> '{redial_list}'\n")
+
+        # 2. Processar a lista
+        targets = redial_list.split()
+        
+        idx_val = KSR.pv.get("$avp(redial_idx)")
+        if idx_val is not None:
+            # Garante que é tratado como inteiro
+            try:
+                idx = int(idx_val)
+            except:
+                idx = 0
+        else:
+            idx = 0
+        
+        if idx < len(targets):
+            next_user = targets[idx]
+            next_uri = "sip:" + next_user + "@" + ACME_DOM
+            
+            KSR.info(f"REDIAL AÇÃO: Remarcando para {next_uri}\n")
+            
+            KSR.pv.sets("$ru", next_uri)
+            KSR.pv.sets("$avp(redial_idx)", str(idx + 1))
+            
+            # Rearmar a falha para o próximo da lista
+            KSR.tm.t_on_failure("ksr_failure_route_redial")
+            KSR.tm.t_relay()
+            return 1
+        else:
+            KSR.info("REDIAL: Fim da lista. Ninguém atendeu.\n")
+
         return 1
+        
