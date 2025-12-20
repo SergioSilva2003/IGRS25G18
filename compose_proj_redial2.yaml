@@ -2,6 +2,9 @@ services:
   kamailio:
     image: ghcr.io/kamailio/kamailio:6.0.3-focal
     container_name: kamailio
+    ports:                      
+      - "5060:5060/udp"          
+      - "50051:50051"            
     networks:
       sipnet:
         aliases:        
@@ -13,6 +16,7 @@ services:
     volumes:
       - ./scripts_aux/app.cfg:/etc/kamailio/kamailio.cfg:ro
       - ./scripts/redial2.0.py:/etc/kamailio/app.py:ro
+      - ./scripts/agent.py:/etc/kamailio/agent.py:ro  
     restart: unless-stopped
 
   terminal_alice:
