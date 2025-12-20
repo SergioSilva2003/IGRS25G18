@@ -22,7 +22,7 @@ def deregister(aor):
             return False
     except:
         return False
-    
+   
     KSR.info("DE-REGISTER DETETADO (Expires: 0)\n")
     KSR.registrar.save("location", 0)
     return True
@@ -35,7 +35,9 @@ class kamailio:
         KSR.info('===== kamailio.child_init(%d)\n' % rank)
         return 0
 
-  
+    # ---------------------------------------------------------
+    # 1. SERVIÇO: ACTIVATE (e verificação geral)
+    # ---------------------------------------------------------
     def ksr_redial_service(self, msg):
         # 1. Se não for MESSAGE, ignora
         if msg.Method != "MESSAGE":
@@ -75,10 +77,40 @@ class kamailio:
         return 1
 
     # ---------------------------------------------------------
+    # 2. SERVIÇO: DEACTIVATE
+    # ---------------------------------------------------------
+    def ksr_redial_service_deactivate(self, msg):
+        # 1. Verificações de segurança
+        if msg.Method != "MESSAGE":
+            return -1
+        if KSR.pv.get("$rU") != "redial" or KSR.pv.get("$rd") != ACME_DOM:
+            return -1
+
+        sender_aor = KSR.pv.get("$fU") + "@" + KSR.pv.get("$fd")
+       
+        # 2. DEBUG DO BODY
+        body = KSR.pv.get("$rb")
+        KSR.info(f"DEBUG BODY DEACTIVATE: Recebi exatamente: '{body}' de {sender_aor}\n")
+
+        # 3. Limpar a tabela
+        KSR.htable.sht_sets("redial", sender_aor, "")
+       
+        # 4. Ler de volta para confirmar (Debug)
+        val_check = KSR.htable.sht_get("redial", sender_aor)
+
+        # 5. ENVIAR A RESPOSTA
+        KSR.sl.send_reply(200, "OK - Deactivated")
+       
+        KSR.info(f"Redial DESATIVADO para {sender_aor}. Tabela agora: '{val_check}'\n")
+       
+        return 1
+
+
+    # ---------------------------------------------------------
     # ROTA PRINCIPAL (REQUEST ROUTE)
     # ---------------------------------------------------------
     def ksr_request_route(self, msg):
-        
+       
         # 1. Verificação de Domínio Global (Segurança)
         if KSR.pv.get("$td") != ACME_DOM:
             KSR.sl.send_reply(403, "Forbidden Domain")
@@ -87,36 +119,43 @@ class kamailio:
 
         # --- Lógica de MESSAGE ---
         if msg.Method == "MESSAGE":
-            # Tenta executar o serviço redial
-            # Se retornar 1, paramos aqui (evita o erro 405)
+
+            body = KSR.pv.get("$rb")
+
+            # A. Lógica do DEACTIVATE
+            # Verifica se existe body e se começa com DEACTIVATE
+            if body and body.strip().startswith("DEACTIVATE"):
+                if self.ksr_redial_service_deactivate(msg) == 1:
+                    return 1
+
+            # B. Se NÃO for Deactivate (é Activate ou erro), chama a função normal
+            # Repara que este IF agora está fora do IF do Deactivate (Correção Importante)
             if self.ksr_redial_service(msg) == 1:
                 return 1
-            
-            # Se retornar -1, continua para Chat Normal
+           
+            # C. Se nenhuma das funções acima "agarrou" a mensagem (retornaram -1),
+            # então é chat normal.
             if KSR.registrar.lookup("location") == 1:
                 KSR.tm.t_relay()
                 return 1
-            
+           
             KSR.sl.send_reply(404, "Not Found")
             return 1
 
         # --- Lógica de REGISTER ---
         if msg.Method == "REGISTER":
             KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")
-            
+           
             aor = aor_Key()
-            
-            # Verificar desregisto
+           
             if deregister(aor):
-                KSR.htable.sht_rm("redial", aor) 
-                return 1 
+                KSR.htable.sht_rm("redial", aor)
+                return 1
 
-            # Registo normal
             KSR.registrar.save("location", 0)
-            
-            # Inicializar lista redial com "sambabue" (para os teus testes)
-            # Depois muda para "" quando quiseres limpar
-            KSR.htable.sht_sets("redial", aor, "") 
+           
+            # Inicializar com string vazia
+            KSR.htable.sht_sets("redial", aor, "")
             KSR.info("Registo e HTABLE atualizados para: " + aor + "\n")
             return 1
 
