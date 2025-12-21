@@ -6,12 +6,10 @@ ACME_DOM = "acme.operador"
 MAX_REDIALS = 5
 REDIAL_DELAY = 2
 
-# ---------------------------------------------------------
-# INICIALIZAÇÃO
-# ---------------------------------------------------------
+
 def mod_init():
     KSR.info("===== from Python mod init\n")
-    # Inicializa a zero no arranque para garantir base limpa
+    # Inicializa a zero
     KSR.htable.sht_sets("stats", "total_activations", "0")
     KSR.htable.sht_sets("stats", "active_users", "0")
     KSR.htable.sht_sets("stats", "max_list_size", "0")
@@ -39,9 +37,9 @@ class kamailio:
         KSR.info('===== kamailio.child_init(%d)\n' % rank)
         return 0
 
-    # ---------------------------------------------------------
+ 
     # FUNÇÕES DE ESTATÍSTICA (KPIs) 
-    # ---------------------------------------------------------
+   
     def log_current_stats(self, context):
         total = KSR.htable.sht_get("stats", "total_activations")
         active = KSR.htable.sht_get("stats", "active_users")
@@ -55,7 +53,7 @@ class kamailio:
         KSR.info(f"STATS FINAL [{context}]: Total={p_total}, Ativos={p_active}, MaxLista={p_max}\n")
 
     def update_kpis_activate(self, sender_aor, list_content):
-        # 1. Total Activations
+       # Total Activations
         val_total = KSR.htable.sht_get("stats", "total_activations")
         
         if val_total is None: 
@@ -148,7 +146,7 @@ class kamailio:
         KSR.info(f"Redial DESATIVADO para {sender_aor}. Valor na tabela agora: '{val_check}'\n")
         return 1 
 
-    def ksr_redial_failure(self, msg):
+    def ksr_redial_logic(self, msg):
         status = KSR.pv.get("$T_reply_code")
         if status: status = int(status)
         else: return 1
@@ -165,7 +163,7 @@ class kamailio:
                 KSR.pv.sets("$avp(redial_count)", str(count))
                 KSR.info(f"REDIAL LOGIC: Tentativa {count} de {MAX_REDIALS}...\n")
                 time.sleep(REDIAL_DELAY)
-                KSR.tm.t_on_failure("ksr_redial_failure")
+                KSR.tm.t_on_failure("ksr_redial_logic")
                 if KSR.registrar.lookup("location") == 1:
                     KSR.tm.t_relay()
                     return 1
@@ -203,7 +201,7 @@ class kamailio:
             
             KSR.registrar.save("location", 0)
             
-            # Inicializa tabela a vazio 
+            # Inicializa tabela vazia
             KSR.htable.sht_sets("redial", aor, "") 
             KSR.info("Registo e HTABLE atualizados para: " + aor + "\n")
             return 1
@@ -216,7 +214,7 @@ class kamailio:
             if lista_redial and target_user in lista_redial.split():
                 KSR.info(f"REDIAL: Monitorizando chamada de {sender_aor} para {target_user}\n")
                 KSR.pv.sets("$avp(redial_count)", "0")
-                KSR.tm.t_on_failure("ksr_redial_failure")
+                KSR.tm.t_on_failure("ksr_redial_logic")
             
             if KSR.registrar.lookup("location") == 1:
                 KSR.rr.record_route()
