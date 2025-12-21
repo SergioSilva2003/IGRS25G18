@@ -36,9 +36,8 @@ class kamailio:
         KSR.info('===== kamailio.child_init(%d)\n' % rank)
         return 0
 
-    # ---------------------------------------------------------
+   
     # FUNÇÕES DE ESTATÍSTICA (KPIs) 
-    # ---------------------------------------------------------
     def log_current_stats(self, context):
         total = KSR.htable.sht_get("stats", "total_activations")
         active = KSR.htable.sht_get("stats", "active_users")
@@ -93,23 +92,21 @@ class kamailio:
             
         self.log_current_stats("After DEACTIVATE")
 
-    # ---------------------------------------------------------
-    # SERVIÇOS REDIAL (ACTIVATE/DEACTIVATE)
-    # ---------------------------------------------------------
+    
+    #ACTIVATE/DEACTIVATE
     def ksr_redial_service(self, msg):
         if msg.Method != "MESSAGE": return -1
         if KSR.pv.get("$rU") != "redial" or KSR.pv.get("$rd") != ACME_DOM: return -1
 
         sender_aor = KSR.pv.get("$fU") + "@" + KSR.pv.get("$fd")
         
-        ### NOVO: PIN SECURITY CHECK ###
+       
         # Verifica se o utilizador já validou o PIN antes de deixar ativar
         is_auth = KSR.htable.sht_get("redial", sender_aor + "::auth")
         if is_auth is None:
             KSR.sl.send_reply(403, "Forbidden - Please send PIN first to 'validar'")
             KSR.info(f"SECURITY: {sender_aor} tentou ativar sem PIN.\n")
             return 1
-        ################################
 
         valor_tabela = KSR.htable.sht_get("redial", sender_aor)
         KSR.info(f"Debug Redial: Valor na tabela para {sender_aor} é: '{valor_tabela}'\n")
@@ -142,9 +139,9 @@ class kamailio:
         KSR.info(f"Redial DESATIVADO para {sender_aor}. Valor na tabela agora: '{val_check}'\n")
         return 1 
 
-    # ---------------------------------------------------------
-    # LÓGICA DE FALHA (Retry)
-    # ---------------------------------------------------------
+   
+    # LÓGICA DO SERVIÇO (REDIAL 2.0)
+    
     def ksr_redial_logic(self, msg):
         status = KSR.pv.get("$T_reply_code")
         if status: status = int(status)
@@ -173,9 +170,8 @@ class kamailio:
                 KSR.info("REDIAL LOGIC: Limite atingido.\n")
         return 1
 
-    # ---------------------------------------------------------
+    
     # ROTA PRINCIPAL (REQUEST ROUTE)
-    # ---------------------------------------------------------
     def ksr_request_route(self, msg):
         if KSR.pv.get("$td") != ACME_DOM:
             KSR.sl.send_reply(403, "Forbidden Domain")
@@ -183,11 +179,11 @@ class kamailio:
 
         if msg.Method == "MESSAGE":
             
-            # ### NOVO: VALIDACAO POR PIN ###
-            # Requisito: Enviar PIN "0000" para sip:validar@acme.operador
+           
+            
             if KSR.pv.get("$rU") == "validar":
                 body = KSR.pv.get("$rb")
-                # Remove espaços e verifica se é 0000
+                
                 if body and body.strip() == "0000":
                     sender = KSR.pv.get("$fU") + "@" + KSR.pv.get("$fd")
                     
@@ -201,7 +197,7 @@ class kamailio:
                     KSR.sl.send_reply(403, "Forbidden - PIN Incorreto")
                     KSR.info(f"PIN VALIDATION: Falha (PIN errado)\n")
                     return 1
-            # ##############################
+            
 
             body = KSR.pv.get("$rb")
             if body and body.strip().startswith("DEACTIVATE"):
@@ -217,7 +213,6 @@ class kamailio:
             aor = aor_Key()
             if deregister(aor):
                 KSR.htable.sht_rm("redial", aor) 
-                # Remove também a autenticação ao sair
                 KSR.htable.sht_rm("redial", aor + "::auth")
                 return 1 
             
